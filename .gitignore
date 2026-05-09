@@ -11,3 +11,4 @@ cloudbuild.yaml
 /.vs/The-Lunacy-Protocol---The-Slaughter-Engine/FileContentIndex/1cb69772-39eb-4f7c-ab36-649ac3752967.vsidx
 firebase-applet-config.json
 firebase-blueprint.json
+firestore.rules
