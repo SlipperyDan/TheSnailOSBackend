@@ -1,0 +1,42 @@
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Anton", sans-serif;
+  
+  --color-neon-green: #00FF00;
+  --color-neon-red: #FF003C;
+  --color-brutal-black: #050505;
+  --color-brutal-gray: #1A1A1A;
+}
+
+body {
+  background-color: var(--color-brutal-black);
+  color: #E5E5E5;
+  font-family: var(--font-sans);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-brutal-black);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-brutal-gray);
+  border: 1px solid #333;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-neon-green);
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.animate-marquee {
+  animation: marquee 20s linear infinite;
+}

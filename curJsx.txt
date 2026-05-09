@@ -1,0 +1,653 @@
+export default function App() {
+  const [riotId, setRiotId] = useState('BananaTyrant#Snail');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  
+  const [puuid, setPuuid] = useState('');
+  const [matchHistory, setMatchHistory] = useState<any[]>([]);
+  const [selectedMatchId, setSelectedMatchId] = useState('');
+  const [matchData, setMatchData] = useState<any>(null);
+  
+  const [activeTab, setActiveTab] = useState<'engine' | 'history'>('engine');
+  const [randomQuote, setRandomQuote] = useState('');
+
+  useEffect(() => {
+    setRandomQuote(PROTOCOL_QUOTES[Math.floor(Math.random() * PROTOCOL_QUOTES.length)]);
+  }, []);
+
+  const handleDownloadTelemetry = () => {
+    if (!matchData) return;
+    
+    const targetPlayer = matchData.players.find((p: any) => p.isTarget);
+    const avgReceipt = matchData.players.reduce((sum: number, p: any) => sum + p.receipt, 0) / 10;
+    const classification = getClassification(targetPlayer.receipt, targetPlayer.net, avgReceipt);
+
+    const teamPlayers = matchData.players.filter((p: any) => p.teamId === targetPlayer.teamId);
+    
+    const teamTotalDamage = teamPlayers.reduce((sum: number, p: any) => sum + p.damage, 0);
+    const teamTotalGold = teamPlayers.reduce((sum: number, p: any) => sum + p.gold, 0);
+    const teamTotalKills = teamPlayers.reduce((sum: number, p: any) => sum + p.kills, 0);
+    const teamTotalVision = teamPlayers.reduce((sum: number, p: any) => sum + p.vision, 0);
+
+    const damageShare = teamTotalDamage > 0 ? (targetPlayer.damage / teamTotalDamage) * 100 : 0;
+    const goldShare = teamTotalGold > 0 ? (targetPlayer.gold / teamTotalGold) * 100 : 0;
+    const killParticipation = teamTotalKills > 0 ? ((targetPlayer.kills + targetPlayer.assists) / teamTotalKills) * 100 : 0;
+    const visionShare = teamTotalVision > 0 ? (targetPlayer.vision / teamTotalVision) * 100 : 0;
+
+    const formatTable = (headers: string[], rows: string[][]) => {
+      const colWidths = headers.map((h, i) => {
+        return Math.max(h.length, ...rows.map(row => (row[i] || '').length));
+      });
+
+      const pad = (str: string, width: number) => str + ' '.repeat(Math.max(0, width - str.length));
+
+      const headerRow = `| ${headers.map((h, i) => pad(h, colWidths[i])).join(' | ')} |`;
+      const separatorRow = `| ${colWidths.map(w => '-'.repeat(w)).join(' | ')} |`;
+      const dataRows = rows.map(row => `| ${row.map((cell, i) => pad(cell, colWidths[i])).join(' | ')} |`).join('\n');
+
+      return `${headerRow}\n${separatorRow}\n${dataRows}`;
+    };
+
+    const ledgerHeaders = ['Minute', 'Event Log', 'Authored Shift (SV)', 'Team Shift (ΔP)'];
+    const ledgerRows = matchData.eventsLedger.map((e: any) => [
+      formatMinute(e.minute),
+      e.events.map((ev: any) => ev.desc).join(', '),
+      `${e.sv > 0 ? '+' : ''}${(e.sv * 100).toFixed(2)}%`,
+      `${e.deltaP > 0 ? '+' : ''}${(e.deltaP * 100).toFixed(2)}%`
+    ]);
+    const ledgerTable = formatTable(ledgerHeaders, ledgerRows);
+
+    const curveHeaders = ['Minute', 'Win Probability', 'ΔP'];
+    const curveRows = matchData.chartData.map((c: any) => [
+      formatMinute(c.minute),
+      `${c.winProb.toFixed(2)}%`,
+      `${c.deltaP > 0 ? '+' : ''}${c.deltaP.toFixed(2)}%`
+    ]);
+    const curveTable = formatTable(curveHeaders, curveRows);
+
+    const md = `# Lunacy Protocol Telemetry Report
+
+## Metadata
+- **Format:** lunacy_protocol_telemetry_v1_markdown
+- **Timestamp:** ${new Date().toISOString()}
+- **Match ID:** ${matchData.matchMetadata.matchId}
+- **Duration:** ${Math.floor(matchData.matchMetadata.duration / 60)}m ${matchData.matchMetadata.duration % 60}s
+- **Game Version:** ${matchData.matchMetadata.version}
+
+## Comparative Statistics
+- **Damage Share:** ${damageShare.toFixed(2)}%
+- **Gold Share:** ${goldShare.toFixed(2)}%
+- **Kill Participation:** ${killParticipation.toFixed(2)}%
+- **Vision Share:** ${visionShare.toFixed(2)}%
+
+## Pilot Profile
+- **ID:** ${targetPlayer.name}
+- **Champion:** ${targetPlayer.champion}
+- **Team:** ${targetPlayer.teamId === 100 ? "BLUE" : "RED"}
+- **K/D/A:** ${matchData.pilotStats.kills} / ${matchData.pilotStats.deaths} / ${matchData.pilotStats.assists} (${matchData.pilotStats.kda} Ratio)
+- **Damage to Champions:** ${matchData.pilotStats.damage.toLocaleString()}
+- **CS:** ${matchData.pilotStats.cs}
+- **Vision Score:** ${matchData.pilotStats.vision}
+- **Gold Earned:** ${matchData.pilotStats.gold.toLocaleString()}
+
+## Protocol Metrics
+- **Receipt of Labor:** ${(targetPlayer.receipt * 100).toFixed(2)}%
+- **Net Authorship:** ${(targetPlayer.net * 100).toFixed(2)}%
+- **Classification:** ${classification.text}
+
+## Clinical Ledger
+${ledgerTable}
+
+## Probability Curve
+${curveTable}
+`;
+
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `telemetry_${targetPlayer.name.replace('#', '_')}_${matchData.matchMetadata.matchId}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!riotId.includes('#')) {
+      setError('Please include the tagline (e.g. Player#NA1)');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    setMatchData(null);
+    setMatchHistory([]);
+    setSelectedMatchId('');
+
+    try {
+      const [gameName, tagLine] = riotId.split('#');
+      const res = await fetch(`/api/riot/player/americas/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}/matches`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to fetch player history');
+      }
+
+      setPuuid(data.puuid);
+      setMatchHistory(data.history);
+
+      if (data.history.length > 0) {
+        await loadMatchDetails(data.history[0].matchId, data.puuid);
+      } else {
+        setError('No matches found for this player.');
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadMatchDetails = async (matchId: string, playerPuuid: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/riot/match/americas/${matchId}/details`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to fetch match details');
+      }
+
+      const processed = processMatchData(data.info, data.timeline, playerPuuid);
+      setMatchData(processed);
+      setSelectedMatchId(matchId);
+      setActiveTab('engine');
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (matchHistory.length === 0) {
+    return (
+      <div className="min-h-screen bg-[#050505] font-sans selection:bg-neon-green selection:text-brutal-black relative overflow-hidden flex flex-col">
+        {/* Grid Background */}
+        <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: 'linear-gradient(#1a1a1a 1px, transparent 1px), linear-gradient(90deg, #1a1a1a 1px, transparent 1px)', backgroundSize: '40px 40px', opacity: 0.3 }}></div>
+        
+        {/* Marquee */}
+        <div className="w-full border-b border-brutal-gray bg-brutal-black/50 p-3 overflow-hidden flex whitespace-nowrap relative z-20">
+          <div className="animate-marquee font-mono text-xs text-zinc-500 uppercase tracking-widest flex gap-8">
+            <span>AXIOM 1: THE ZERO STATE</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 2: SLAUGHTER VELOCITY</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 3: COUNTER VELOCITY</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 4: THE COEFFICIENT OF MEDIOCRITY</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 5: THE SOUL OF THE PROTOCOL</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 6: THE RECEIPT OF LABOR</span>
+            <span className="text-neon-green">///</span>
+            {/* Repeat for seamless marquee */}
+            <span>AXIOM 1: THE ZERO STATE</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 2: SLAUGHTER VELOCITY</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 3: COUNTER VELOCITY</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 4: THE COEFFICIENT OF MEDIOCRITY</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 5: THE SOUL OF THE PROTOCOL</span>
+            <span className="text-neon-green">///</span>
+            <span>AXIOM 6: THE RECEIPT OF LABOR</span>
+            <span className="text-neon-green">///</span>
+          </div>
+        </div>
+
+        <div className="flex-1 relative z-10 flex flex-col p-6 md:p-12 h-full overflow-y-auto">
+          
+          {/* Top Section: Header & Title */}
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8 }}
+            className="w-full max-w-[1600px] mx-auto flex flex-col items-center shrink-0"
+          >
+            {/* Header Row: Logo & Status */}
+            <div className="flex justify-between items-start w-full">
+              {/* Refined Legion Logo SVG */}
+              <div className="w-20 h-20 md:w-32 md:h-32 flex items-center justify-center">
+                <svg viewBox="0 0 200 200" className="w-full h-full text-neon-green drop-shadow-[0_0_15px_rgba(0,255,0,0.3)]" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="100" cy="100" r="90" stroke="currentColor" strokeWidth="6" fill="none" />
+                  <path d="M100 20 L40 170 M100 20 L160 170" stroke="currentColor" strokeWidth="8" strokeLinecap="square" />
+                  <path d="M30 130 L170 90" stroke="currentColor" strokeWidth="10" strokeLinecap="square" />
+                  <text x="100" y="125" fontFamily="Anton, sans-serif" fontSize="42" textAnchor="middle" fill="#050505" stroke="currentColor" strokeWidth="1.5" transform="rotate(-15 100 125)" style={{ letterSpacing: '4px' }}>
+                    LEGION
+                  </text>
+                </svg>
+              </div>
+              
+              {/* System Status */}
+              <div className="font-mono text-neon-green text-xs md:text-sm tracking-widest text-right space-y-1 opacity-80">
+                <p>SYSTEM: ONLINE</p>
+                <p>VERSION: 1.0.0</p>
+                <p>STATUS: AWAITING INPUT</p>
+              </div>
+            </div>
+
+            {/* Typography */}
+            <div className="space-y-3 w-full mt-4 md:mt-6 text-center">
+              <h1 className="font-display text-10xl md:text-[100px] lg:text-[120px] leading-[1.1] tracking-tight text-neon-green uppercase">
+                The fuck mothering <br/> Lunacy: Protocol
+              </h1>
+              <h2 className="font-mono text-xl md:text-3xl text-neon-green tracking-[0.4em] uppercase flex items-center justify-center gap-4 md:gap-8">
+                <span className="w-8 md:w-24 h-px bg-neon-green"></span>
+                Slaughter Engine
+                <span className="w-8 md:w-24 h-px bg-neon-green"></span>
+              </h2>
+            </div>
+          </motion.div>
+
+          {/* Interactive Telemetry Box */}
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8, delay: 0.2 }}
+            className="w-full max-w-4xl mx-auto mt-16 md:mt-24 shrink-0"
+          >
+              <div className="bg-brutal-black border border-brutal-gray p-8 md:p-12 relative group text-left">
+                {/* Corner accents */}
+                <div className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-neon-green opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                <div className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-neon-green opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                <div className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-neon-green opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                <div className="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-neon-green opacity-50 group-hover:opacity-100 transition-opacity"></div>
+
+                <div className="space-y-8">
+                  <div className="space-y-2 text-center">
+                    <h3 className="font-mono text-2xl text-white uppercase tracking-widest">Initialize Telemetry</h3>
+                    <p className="font-mono text-sm text-zinc-500 uppercase tracking-wider">Enter target pilot identification</p>
+                  </div>
+
+                  <form onSubmit={handleSearch} className="space-y-6">
+                    <div className="space-y-4">
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-6 flex items-center pointer-events-none">
+                          <Search className="h-6 w-6 text-zinc-500" />
+                        </div>
+                        <input
+                          type="text"
+                          value={riotId}
+                          onChange={(e) => setRiotId(e.target.value)}
+                          placeholder="GameName#TagLine"
+                          className="w-full bg-[#050505] border border-brutal-gray text-white font-mono text-xl py-6 pl-16 pr-6 focus:border-neon-green focus:outline-none transition-colors text-center"
+                        />
+                      </div>
+                    </div>
+
+                    <button 
+                      type="submit" 
+                      disabled={loading}
+                      className="w-full bg-neon-green text-brutal-black font-mono font-bold text-xl py-6 uppercase tracking-widest hover:bg-white transition-colors disabled:opacity-50 flex items-center justify-center gap-4"
+                    >
+                      {loading ? (
+                        <>
+                          <Loader2 className="w-6 h-6 animate-spin" />
+                          <span>Extracting Ledger...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Commence Analysis</span>
+                          <ChevronRight className="w-6 h-6" />
+                        </>
+                      )}
+                    </button>
+                  </form>
+
+                  {error && (
+                    <div className="p-4 border border-neon-red bg-neon-red/10 text-neon-red font-mono text-base text-center">
+                      {error}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+
+            {/* Random Quote */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 1, delay: 0.4 }}
+              className="font-mono text-zinc-400 text-sm md:text-xl uppercase tracking-widest leading-relaxed max-w-6xl border-l-4 border-r-4 border-brutal-gray px-6 md:px-12 py-8 mt-16 md:mt-24 mb-12 text-center shrink-0 mx-auto"
+            >
+              <p>"{randomQuote}"</p>
+            </motion.div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] font-sans selection:bg-neon-green selection:text-brutal-black relative">
+      {/* Grid Background */}
+      <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: 'linear-gradient(#1a1a1a 1px, transparent 1px), linear-gradient(90deg, #1a1a1a 1px, transparent 1px)', backgroundSize: '40px 40px', opacity: 0.3 }}></div>
+
+      <div className="relative z-10 p-6 md:p-12 max-w-10xl mx-auto space-y-12 pb-24">
+        
+        {/* Header & Search (Compact for Stats Page) */}
+        <header className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-brutal-gray pb-6">
+          <div>
+            <h1 className="font-display text-4xl md:text-5xl uppercase tracking-tight text-white">
+              Slaughter Engine
+            </h1>
+            <h2 className="font-mono text-xs text-neon-green tracking-[0.2em] uppercase mt-1">
+              Lunacy Protocol v1.0
+            </h2>
+          </div>
+          
+          <form onSubmit={handleSearch} className="flex gap-4 w-full md:w-auto">
+            <div className="flex-1 md:w-64 relative">
+              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                <Search className="h-4 w-4 text-zinc-500" />
+              </div>
+              <input
+                type="text"
+                value={riotId}
+                onChange={(e) => setRiotId(e.target.value)}
+                placeholder="GameName#TagLine"
+                className="w-full bg-brutal-black border border-brutal-gray text-white font-mono py-3 pl-10 pr-4 text-sm focus:border-neon-green focus:outline-none transition-colors"
+              />
+            </div>
+            <button 
+              type="submit" 
+              disabled={loading}
+              className="bg-neon-green text-brutal-black font-mono font-bold px-6 text-sm uppercase tracking-wider hover:bg-white transition-colors disabled:opacity-50 flex items-center justify-center"
+            >
+              {loading && !matchData ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Analyze'}
+            </button>
+          </form>
+        </header>
+
+        {error && (
+          <div className="p-4 border border-neon-red bg-neon-red/10 text-neon-red font-mono text-sm max-w-xl">
+            {error}
+          </div>
+        )}
+
+        {matchHistory.length > 0 && (
+          <div className="space-y-8 animate-in fade-in duration-700">
+            
+            {/* Tabs */}
+            <div className="flex border-b border-brutal-gray">
+              <button
+                onClick={() => setActiveTab('engine')}
+                className={`flex items-center gap-2 px-6 py-4 font-mono text-sm uppercase tracking-wider transition-colors border-b-2 ${activeTab === 'engine' ? 'border-neon-green text-neon-green' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+              >
+                <Activity className="w-4 h-4" />
+                Analysis Engine
+              </button>
+              <button
+                onClick={() => setActiveTab('history')}
+                className={`flex items-center gap-2 px-6 py-4 font-mono text-sm uppercase tracking-wider transition-colors border-b-2 ${activeTab === 'history' ? 'border-neon-green text-neon-green' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+              >
+                <History className="w-4 h-4" />
+                Match History
+              </button>
+            </div>
+
+            {/* Tab Content: Engine */}
+            {activeTab === 'engine' && matchData && (
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-12"
+              >
+                {/* Focused Pilot Section */}
+                <div className="space-y-4">
+                  {(() => {
+                    const targetPlayer = matchData.players.find((p: any) => p.isTarget);
+                    const avgReceipt = matchData.players.reduce((sum: number, p: any) => sum + p.receipt, 0) / 10;
+                    const classification = getClassification(targetPlayer.receipt, targetPlayer.net, avgReceipt);
+
+                    return (
+                      <div className="space-y-6">
+                        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-brutal-gray pb-4">
+                          <h3 className="font-mono text-sm text-neon-green uppercase tracking-widest">
+                            Pilot Analysis: {targetPlayer.name}
+                          </h3>
+                          <button 
+                            onClick={handleDownloadTelemetry}
+                            className="flex items-center justify-center gap-2 font-mono text-xs text-brutal-black bg-neon-green px-4 py-2 uppercase tracking-widest hover:bg-white transition-colors font-bold"
+                          >
+                            <Download className="w-4 h-4" />
+                            Export LLM Telemetry
+                          </button>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                          <div className="p-6 border border-brutal-gray bg-brutal-black">
+                            <h4 className="font-mono text-xs text-zinc-500 uppercase tracking-widest mb-2">Champion</h4>
+                            <div className="font-display text-4xl text-white">
+                              {targetPlayer.champion}
+                            </div>
+                          </div>
+                          
+                          <div className="p-6 border border-brutal-gray bg-brutal-black">
+                            <h4 className="font-mono text-xs text-zinc-500 uppercase tracking-widest mb-2">Receipt of Labor</h4>
+                            <div className="font-mono text-4xl text-white">
+                              {(targetPlayer.receipt * 100).toFixed(2)}%
+                            </div>
+                            <p className="text-xs text-zinc-500 mt-2">Total probability moved</p>
+                          </div>
+
+                          <div className="p-6 border border-brutal-gray bg-brutal-black">
+                            <h4 className="font-mono text-xs text-zinc-500 uppercase tracking-widest mb-2">Net Authorship</h4>
+                            <div className={`font-mono text-4xl ${targetPlayer.net > 0 ? 'text-neon-green' : targetPlayer.net < 0 ? 'text-neon-red' : 'text-zinc-500'}`}>
+                              {targetPlayer.net > 0 ? '+' : ''}{(targetPlayer.net * 100).toFixed(2)}%
+                            </div>
+                            <p className="text-xs text-zinc-500 mt-2">Directional impact</p>
+                          </div>
+                        </div>
+
+                        <div className="p-8 border border-brutal-gray bg-brutal-black flex flex-col items-center justify-center text-center">
+                          <h4 className="font-mono text-xs text-zinc-500 uppercase tracking-widest mb-4">Protocol Classification</h4>
+                          <div className={`font-display text-4xl md:text-5xl tracking-wide ${classification.color}`}>
+                            {classification.text}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                          <div className="p-4 border border-brutal-gray bg-brutal-black/50">
+                            <h4 className="font-mono text-xs text-zinc-500 uppercase tracking-widest mb-1">K / D / A</h4>
+                            <div className="font-mono text-xl text-white">
+                              {matchData.pilotStats.kills} / <span className="text-neon-red">{matchData.pilotStats.deaths}</span> / <span className="text-blue-400">{matchData.pilotStats.assists}</span>
+                            </div>
+                            <p className="text-xs text-zinc-500 mt-1">{matchData.pilotStats.kda} Ratio ({matchData.pilotStats.killParticipation.toFixed(1)}% KP)</p>
+                          </div>
+                          <div className="p-4 border border-brutal-gray bg-brutal-black/50">
+                            <h4 className="font-mono text-xs text-zinc-500 uppercase tracking-widest mb-1">CS</h4>
+                            <div className="font-mono text-xl text-white">
+                              {matchData.pilotStats.cs}
+                            </div>
+                            <p className="text-xs text-zinc-500 mt-1">Total Minions ({matchData.pilotStats.goldShare.toFixed(1)}% Gold)</p>
+                          </div>
+                          <div className="p-4 border border-brutal-gray bg-brutal-black/50">
+                            <h4 className="font-mono text-xs text-zinc-500 uppercase tracking-widest mb-1">Damage</h4>
+                            <div className="font-mono text-xl text-white">
+                              {matchData.pilotStats.damage.toLocaleString()}
+                            </div>
+                            <p className="text-xs text-zinc-500 mt-1">To Champions ({matchData.pilotStats.damageShare.toFixed(1)}% Share)</p>
+                          </div>
+                          <div className="p-4 border border-brutal-gray bg-brutal-black/50">
+                            <h4 className="font-mono text-xs text-zinc-500 uppercase tracking-widest mb-1">Vision</h4>
+                            <div className="font-mono text-xl text-white">
+                              {matchData.pilotStats.vision}
+                            </div>
+                            <p className="text-xs text-zinc-500 mt-1">Vision Score ({matchData.pilotStats.visionShare.toFixed(1)}% Share)</p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Chart Section */}
+                <div className="p-6 border border-brutal-gray bg-brutal-black">
+                  <h3 className="font-mono text-sm text-neon-green uppercase tracking-widest mb-6 border-b border-brutal-gray pb-4">
+                    Win Probability P(t) - {matchData.targetParticipant.teamId === 100 ? 'Blue' : 'Red'} Team Perspective
+                  </h3>
+                  <div className="h-[400px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={matchData.chartData} margin={{ top: 20, right: 20, bottom: 20, left: 0 }}>
+                        <ReferenceLine y={50} stroke="#333" strokeDasharray="3 3" />
+                        <XAxis 
+                          dataKey="minute" 
+                          stroke="#666" 
+                          tick={{ fill: '#666', fontFamily: 'monospace', fontSize: 12 }}
+                          tickFormatter={(val) => formatMinute(val)}
+                        />
+                        <YAxis 
+                          domain={[0, 100]} 
+                          stroke="#666"
+                          tick={{ fill: '#666', fontFamily: 'monospace', fontSize: 12 }}
+                          tickFormatter={(val) => `${val}%`}
+                        />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#050505', border: '1px solid #333', fontFamily: 'monospace' }}
+                          itemStyle={{ color: '#00FF00' }}
+                          labelStyle={{ color: '#888', marginBottom: '8px' }}
+                          formatter={(value: number) => [`${value.toFixed(1)}%`, 'Win Prob']}
+                          labelFormatter={(label) => `Minute ${formatMinute(label as number)}`}
+                        />
+                        <Line 
+                          type="monotone" 
+                          dataKey="winProb" 
+                          stroke="#00FF00" 
+                          strokeWidth={2} 
+                          dot={false}
+                          activeDot={{ r: 6, fill: '#00FF00' }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Clinical Ledger Section */}
+                <div className="space-y-4">
+                  <h3 className="font-mono text-sm text-neon-green uppercase tracking-widest border-b border-brutal-gray pb-4">
+                    Clinical Ledger of Events
+                  </h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse table-fixed">
+                      <thead>
+                        <tr className="border-b border-brutal-gray font-mono text-xs text-zinc-500 uppercase tracking-wider">
+                          <th className="p-4 w-1/4">Time</th>
+                          <th className="p-4 w-1/4">Event Log</th>
+                          <th className="p-4 w-1/4 text-right">Authored Shift (SV)</th>
+                          <th className="p-4 w-1/4 text-right">Team Shift (ΔP)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono text-sm">
+                        {matchData.eventsLedger.map((ledgerEntry: any, i: number) => (
+                          <tr key={i} className="border-b border-brutal-gray/50 hover:bg-white/5 transition-colors">
+                            <td className="p-4 text-zinc-400">{formatMinute(ledgerEntry.minute)}</td>
+                            <td className="p-4">
+                              <div className="space-y-2">
+                                {ledgerEntry.events.map((e: any, j: number) => (
+                                  <div key={j} className="flex items-center gap-3">
+                                    <span className={`w-2 h-2 rounded-full ${e.type === 'DEATH' ? 'bg-neon-red' : e.type === 'KILL' ? 'bg-neon-green' : 'bg-blue-400'}`}></span>
+                                    <span className="text-zinc-300">{e.desc}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="p-4">
+                              <ShiftBar value={ledgerEntry.sv * 100} max={100} />
+                            </td>
+                            <td className="p-4">
+                              <ShiftBar value={ledgerEntry.deltaP * 100} max={20} isPercentage />
+                            </td>
+                          </tr>
+                        ))}
+                        {matchData.eventsLedger.length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="p-8 text-center text-zinc-500 font-mono">No significant events recorded for this pilot.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* Tab Content: History */}
+            {activeTab === 'history' && (
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-4"
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse table-fixed">
+                    <thead>
+                      <tr className="border-b border-brutal-gray font-mono text-xs text-zinc-500 uppercase tracking-wider">
+                        <th className="p-4 w-1/5">Result</th>
+                        <th className="p-4 w-1/5">Champion</th>
+                        <th className="p-4 w-1/5">K / D / A</th>
+                        <th className="p-4 w-1/5">Date</th>
+                        <th className="p-4 w-1/5 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="font-mono text-sm">
+                      {matchHistory.map((match: any) => {
+                        const date = new Date(match.gameCreation);
+                        const isSelected = match.matchId === selectedMatchId;
+                        
+                        return (
+                          <tr 
+                            key={match.matchId} 
+                            className={`border-b border-brutal-gray/50 transition-colors ${isSelected ? 'bg-neon-green/5' : 'hover:bg-white/5'}`}
+                          >
+                            <td className="p-4">
+                              <span className={`font-bold ${match.win ? 'text-neon-green' : 'text-neon-red'}`}>
+                                {match.win ? 'VICTORY' : 'DEFEAT'}
+                              </span>
+                            </td>
+                            <td className="p-4 text-white font-display text-xl tracking-wide">{match.championName}</td>
+                            <td className="p-4 text-zinc-400">
+                              <span className="text-white">{match.kills}</span> / <span className="text-neon-red">{match.deaths}</span> / <span className="text-blue-400">{match.assists}</span>
+                            </td>
+                            <td className="p-4 text-zinc-500 text-xs">
+                              {date.toLocaleDateString()} {date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </td>
+                            <td className="p-4 text-right">
+                              <button
+                                onClick={() => loadMatchDetails(match.matchId, puuid)}
+                                disabled={loading || isSelected}
+                                className={`flex items-center justify-end gap-2 w-full uppercase tracking-widest text-xs font-bold transition-colors ${isSelected ? 'text-neon-green' : 'text-zinc-500 hover:text-white'}`}
+                              >
+                                {isSelected ? 'Viewing' : 'Analyze'}
+                                {!isSelected && <ChevronRight className="w-4 h-4" />}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </motion.div>
+            )}
+
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,5 @@
+{
+  "name": "The Lunacy Protocol - Slaughter Engine Edition",
+  "description": "An interactive manifesto and probability impact calculator for The Lunacy Protocol.",
+  "requestFramePermissions": ["microphone"]
+}

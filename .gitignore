@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+ *.env
+Dockerfile
+cloudbuild.yaml
+/.vs/The-Lunacy-Protocol---The-Slaughter-Engine/FileContentIndex/1c869c1b-5417-4f38-913f-3750f3afd7ba.vsidx
+/.vs/The-Lunacy-Protocol---The-Slaughter-Engine/FileContentIndex/1cb69772-39eb-4f7c-ab36-649ac3752967.vsidx
+firebase-applet-config.json
+firebase-blueprint.json
